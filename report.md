@@ -71,12 +71,20 @@ python3 public_test.py
 #### 2. 推理过程与计算关系
 
 1. **输入格式**：`phase_01` 先以 `esi = 1` 调用 `valid_u32_fields`，再用 `sscanf(input, "%u", &v0)` 读取 **1 个** 32 位无符号整数，并与 `p1_compute(challenge)` 的返回值 `%eax` 比较（`4020e0: cmp %eax, -0x14(%rbp)`）。
-2. **三段切片与分步调用**（均按 `uint32_t` 模 $2^{32}$ 运算）：
-   - 记 $w_0 = \text{ uint32\_t }(\text{challenge})$，$w_1 = \text{ uint32\_t }(\text{challenge} \gg 16)$，$w_2 = \text{ uint32\_t }(\text{challenge} \gg 32)$。
-   - 第一次调用 `p1_step1(w2, w1)`：计算 $s_1 = (w_2 + 2 w_1) \oplus \text{0xd15c}$。注意 `p1_step1` 未修改 `%edi`（仍为 $w_2$）与 `%edx`（仍为 $w_0$）。
-   - 第二次调用 `p1_step0(w0, w2)`：返回值保存在 `%eax`，同时 $s_1$ 保存在 `%ecx` 中未被破坏，计算得 $s_0 = (w_2 \oplus \text{0x0aac}) + 2 w_0$。
-   - 第三次调用 `p1_step2(s0, s1)`：`lea (%rdi,%rdi,4), %eax` 计算 $5 s_0$，加上 $s_1$ 后异或 `0xe4a1`，最终口令为：
-     $$\text{ans} = (5 s_0 + s_1) \oplus \text{0xe4a1}$$
+2. **三段切片与分步调用**（均按 `uint32_t` 模 2³² 无符号运算）：
+   - 记 `w0 = (uint32_t)challenge`，`w1 = (uint32_t)(challenge >> 16)`，`w2 = (uint32_t)(challenge >> 32)`。
+   - 第一次调用 `p1_step1(w2, w1)`：计算 `s1 = (w2 + 2 * w1) ^ 0xd15c`。注意 `p1_step1` 未修改 `%edi`（仍为 `w2`）与 `%edx`（仍为 `w0`）。
+   - 第二次调用 `p1_step0(w0, w2)`：返回值保存在 `%eax`，同时 `s1` 保存在 `%ecx` 中未被破坏，计算得 `s0 = 2 * w0 + (w2 ^ 0x0aac)`。
+   - 第三次调用 `p1_step2(s0, s1)`：`lea (%rdi,%rdi,4), %eax` 计算 `5 * s0`，加上 `s1` 后异或 `0xe4a1`，最终口令计算式为：
+
+```c
+uint32_t w0 = (uint32_t)challenge;
+uint32_t w1 = (uint32_t)(challenge >> 16);
+uint32_t w2 = (uint32_t)(challenge >> 32);
+uint32_t s1 = (w2 + 2U * w1) ^ 0xd15cU;
+uint32_t s0 = 2U * w0 + (w2 ^ 0x0aacU);
+uint32_t ans = (5U * s0 + s1) ^ 0xe4a1U;
+```
 
 ---
 
@@ -115,9 +123,17 @@ python3 public_test.py
 
 1. **输入格式**：`valid_u32_fields` 和 `sscanf` 读取 **6 个** 32 位无符号整数 `v[0..5]`，存放在栈帧 `-0x40(%rbp)` 至 `-0x2c(%rbp)`。
 2. **首项计算**：`challenge >> 41` 左移 1 位并与 `0x1fe` 相与（等价于取低 8 位再乘以 2），再加 4：
-   $$v_0 = (((\text{challenge} \gg 41) \mathbin{\&} \text{0xff}) \times 2) + 4$$
-3. **递推关系**：循环变量 $i = \text{\%rdx}$ 从 $1$ 遍历到 $5$，移位量 $\text{shift} = \text{\%ecx}$ 初值为 `0x12`（18），每轮递增 4（即 $\text{shift}_i = 18 + 4(i-1)$）：
-   $$v_i = 2 v_{i-1} + \bigl(((\text{challenge} \gg (18 + 4(i-1))) \mathbin{\&} \text{0x3f}) \oplus i\bigr), \quad i = 1, 2, 3, 4, 5$$
+   `v[0] = (((uint32_t)(challenge >> 41) & 0xffU) * 2U) + 4U`
+3. **递推关系**：循环变量 `i = %rdx` 从 `1` 遍历到 `5`，移位量 `shift = %ecx` 初值为 `0x12`（18），每轮递增 4（即 `shift = 18 + 4 * (i - 1)`）：
+
+```c
+v[0] = (((uint32_t)(challenge >> 41) & 0xffU) * 2U) + 4U;
+for (uint32_t i = 1; i < 6; ++i) {
+    unsigned shift = 18U + 4U * (i - 1U);
+    uint32_t step = ((uint32_t)(challenge >> shift) & 0x3fU) ^ i;
+    v[i] = 2U * v[i - 1] + step;
+}
+```
 
 ---
 
@@ -155,19 +171,19 @@ python3 public_test.py
 #### 2. 推理过程与计算关系
 
 1. **输入格式**：读取 **2 个** 32 位无符号整数 `v[0]`、`v[1]`。
-2. **第一个数 `v[0]`**：`402301: and $0x7, %edi; cmp %edi, -0x18(%rbp)`，故 $v_0 = \text{challenge} \mathbin{\&} 7$。
-3. **第二个数 `v[1]`**：传入 `p3_dispatch(op, x)` 的第二个参数为 $x = \text{uint32\_t}(\text{challenge} \gg 32) \oplus \text{uint32\_t}(\text{challenge} \gg 3)$。注意跳转表 `0x405820` 中的分支下标 `0..7` 并非按名字顺序对应 `p3_case_0..7`，实际映射关系如下表所示：
+2. **第一个数 `v[0]`**：`402301: and $0x7, %edi; cmp %edi, -0x18(%rbp)`，故 `v[0] = (uint32_t)challenge & 7U`。
+3. **第二个数 `v[1]`**：传入 `p3_dispatch(op, x)` 的第二个参数为 `x = (uint32_t)(challenge >> 32) ^ (uint32_t)(challenge >> 3)`。注意跳转表 `0x405820` 中的分支下标 `0..7` 并非按名字顺序对应 `p3_case_0..7`，实际映射关系如下表所示：
 
 | 分支 `op` | 跳转表目标地址 | 实际调用的辅助函数 | 对应的 32 位无符号计算表达式 |
 | :---: | :---: | :---: | :--- |
-| `0` | `0x402278` | `p3_case_2` | $5x + \text{0xa588}$ |
-| `1` | `0x402280` | `p3_case_0` | $(4x) \oplus \text{0xbd13}$ |
-| `2` | `0x402288` | `p3_case_3` | $5x + \text{0xccce}$ |
-| `3` | `0x402290` | `p3_case_4` | $(x \oplus \text{0x2801}) + (x \gg 1)$ |
-| `4` | `0x402298` | `p3_case_1` | $(x \oplus \text{0xb783}) + (x \gg 1)$ |
-| `5` | `0x4022a0` | `p3_case_7` | $5x + \text{0x04d3}$ |
-| `6` | `0x402268` | `p3_case_5` | $5x + \text{0x3820c}$ |
-| `7` | `0x402270` | `p3_case_6` | $(4x) \oplus \text{0x33f5}$ |
+| `0` | `0x402278` | `p3_case_2` | `5U * x + 0xa588U` |
+| `1` | `0x402280` | `p3_case_0` | `(4U * x) ^ 0xbd13U` |
+| `2` | `0x402288` | `p3_case_3` | `5U * x + 0xccceU` |
+| `3` | `0x402290` | `p3_case_4` | `(x ^ 0x2801U) + (x >> 1)` |
+| `4` | `0x402298` | `p3_case_1` | `(x ^ 0xb783U) + (x >> 1)` |
+| `5` | `0x4022a0` | `p3_case_7` | `5U * x + 0x04d3U` |
+| `6` | `0x402268` | `p3_case_5` | `5U * x + 0x3820cU` |
+| `7` | `0x402270` | `p3_case_6` | `(4U * x) ^ 0x33f5U` |
 
 ---
 
@@ -212,12 +228,12 @@ python3 public_test.py
 #### 2. 推理过程与计算关系
 
 1. **输入参数**：`phase_04` 读取 **1 个** 整数，调用 `p4_walk(target, 0, 127, key)`，其中：
-   - $\text{target} = \text{uint32\_t}(\text{challenge}) \mathbin{\&} \text{0x7f}$
-   - $\text{key} = \text{uint32\_t}(\text{challenge} \gg 7) \oplus \text{uint32\_t}(\text{challenge} \gg 32)$
-2. **二分递归关系**：设 $\text{mid} = \text{low} + ((\text{high} - \text{low}) \gg 1)$：
-   - **基例**（$\text{target} = \text{mid}$）：返回 $(\text{mid} + \text{0xd0}) \oplus \text{key}$；
-   - **左子树**（$\text{target} < \text{mid}$，`jb 402370`）：递归计算 $r = \text{p4\_walk}(\text{target}, \text{low}, \text{mid}-1, \text{key})$，返回 $((3r) \oplus (\text{mid} + \text{key})) \oplus \text{0x17}$；
-   - **右子树**（$\text{target} > \text{mid}$）：递归计算 $r = \text{p4\_walk}(\text{target}, \text{mid}+1, \text{high}, \text{key})$，返回 $((3r) \oplus (\text{mid} + \text{key})) \oplus \text{0x1b}$。
+   - `target = (uint32_t)challenge & 0x7fU`
+   - `key = (uint32_t)(challenge >> 7) ^ (uint32_t)(challenge >> 32)`
+2. **二分递归关系**：设 `mid = low + ((high - low) >> 1)`：
+   - **基例**（`target == mid`）：返回 `(mid + 0xd0U) ^ key`；
+   - **左子树**（`target < mid`，`jb 402370`）：递归计算 `sub = p4_walk(target, low, mid - 1, key)`，返回 `((3U * sub) ^ (mid + key)) ^ 0x17U`；
+   - **右子树**（`target > mid`）：递归计算 `sub = p4_walk(target, mid + 1, high, key)`，返回 `((3U * sub) ^ (mid + key)) ^ 0x1bU`。
 
 ---
 
@@ -266,10 +282,10 @@ python3 public_test.py
 2. **静态链表还原**：读取 `.rodata` 中 `p5_heads`（`0x405b60`）与 `p5_nodes`（`0x405ba0`）的数据，12 个节点构成一条单链表（且 `p5_heads[0..7]` 恰好指向该链表的前 8 个节点）：
    `0x405ba0 (tag=0x0125, val=0x7964)` → `0x405c30 (0x0816, 0x1daf)` → `0x405c40 (0x0a10, 0xe5c2)` → `0x405be0 (0x0001, 0x7ab6)` → `0x405c00 (0x093b, 0x3598)` → `0x405bd0 (0x050a, 0xb590)` → `0x405c10 (0x0309, 0x8c86)` → `0x405bc0 (0x0b5f, 0x1004)` → `0x405c50 (0x021f, 0xe3ea)` → `0x405bf0 (0x0482, 0x7663)` → `0x405c20 (0x0714, 0xa6b3)` → `0x405bb0 (0x065a, 0x2998)` → `NULL`。
 3. **遍历与折叠计算**：
-   - 起始下标 $\text{head\_idx} = \text{challenge} \mathbin{\&} 7$，额外前进步数 $\text{steps} = (\text{challenge} \gg 3) \mathbin{\&} 3$；
-   - 初始累加器 $\text{acc} = (\text{uint32\_t}(\text{challenge} \gg 6) \oplus \text{uint32\_t}(\text{challenge} \gg 32)) \oplus \text{0x62dc}$；
-   - 依次访问链表中下标为 $\text{head\_idx} + s$（$s = 0, 1, \dots, \text{steps}$）的节点，每次更新：
-     $$\text{acc} \leftarrow ((\text{acc} + \text{node.val}) \times 5) \oplus \text{node.tag}, \quad \text{last\_tag} \leftarrow \text{node.tag}$$
+   - 起始下标 `head_idx = (uint32_t)challenge & 7U`，额外前进步数 `steps = (uint32_t)(challenge >> 3) & 3U`；
+   - 初始累加器 `acc = ((uint32_t)(challenge >> 6) ^ (uint32_t)(challenge >> 32)) ^ 0x62dcU`；
+   - 依次访问链表中下标为 `head_idx + s`（`s = 0, 1, ..., steps`）的节点，每次更新：
+     `acc = ((acc + node.val) * 5U) ^ node.tag`，并记录 `last_tag = node.tag`；
    - 输出 **2 个**整数：`values[0] = acc`，`values[1] = last_tag`。
 
 ---
@@ -310,17 +326,21 @@ python3 public_test.py
 #### 2. 推理过程与计算关系
 
 1. **初始值与两次间接调用索引**：
-   - $x_0 = \text{uint32\_t}(\text{challenge} \gg 6) \oplus \text{uint32\_t}(\text{challenge} \gg 32)$
-   - $\text{idx}_1 = \text{challenge} \mathbin{\&} 7$，$\text{idx}_2 = (\text{challenge} \gg 3) \mathbin{\&} 7$（汇编中 `and $0x38, %ebx` 直接得到字节偏移 $8 \times \text{idx}_2$）。
+   - `x0 = (uint32_t)(challenge >> 6) ^ (uint32_t)(challenge >> 32)`
+   - `idx1 = (uint32_t)challenge & 7U`，`idx2 = (uint32_t)(challenge >> 3) & 7U`（汇编中 `and $0x38, %ebx` 直接得到字节偏移 `8 * idx2`）。
 2. **函数指针表 `p6_ops[0..7]` 对应的运算**：
-   - `idx = 0`（`p6_op_4`）：$\text{rol}_{32}(x, 5) \oplus \text{0xb6a4}$
-   - `idx = 1, 5`（`p6_op_5`）：$(x \oplus \text{0x8877}) + 2x$
-   - `idx = 2`（`p6_op_0`）：$(x + \text{0x4df1}) \oplus (x \gg 2)$
-   - `idx = 3, 7`（`p6_op_3`）：$((x \gg 1) \oplus x) + \text{0x945c}$
-   - `idx = 4`（`p6_op_1`）：$\text{ror}_{32}(x, 3)$
-   - `idx = 6`（`p6_op_2`）：$((x \ll 7) + \text{0xb4fc}) \oplus (7x)$
+   - `idx = 0`（`p6_op_4`）：`((x << 5) | (x >> 27)) ^ 0xb6a4U`
+   - `idx = 1, 5`（`p6_op_5`）：`(x ^ 0x8877U) + 2U * x`
+   - `idx = 2`（`p6_op_0`）：`(x + 0x4df1U) ^ (x >> 2)`
+   - `idx = 3, 7`（`p6_op_3`）：`((x >> 1) ^ x) + 0x945cU`
+   - `idx = 4`（`p6_op_1`）：`(x >> 3) | (x << 29)`
+   - `idx = 6`（`p6_op_2`）：`((x << 7) + 0xb4fcU) ^ (7U * x)`
 3. **组合输出（1 个整数）**：
-   $$x_1 = \text{p6\_ops}[\text{idx}_1](x_0) \oplus \text{0x57c4}, \quad \text{ans} = \text{p6\_ops}[\text{idx}_2](x_1) + \text{0x2716}$$
+
+```c
+uint32_t x1 = p6_ops[idx1](x0) ^ 0x57c4U;
+uint32_t ans = p6_ops[idx2](x1) + 0x2716U;
+```
 
 ---
 
@@ -388,15 +408,23 @@ python3 public_test.py
 
 1. **局部结构体栈布局与门禁校验（`secret_gate`）**：
    - 局部缓冲区起始于 `-0xd0(%rbp)`，总清零长度为 164 字节（`0xa4` 字节）；
-   - 输入字符串长度必须满足 $36 \le \text{strlen}(\text{input}) \le 163$（`sub $0x24, %rax; cmp $0x7f, %rax; jbe`）；
+   - 输入字符串长度必须满足 `36 <= strlen(input) <= 163`（`sub $0x24, %rax; cmp $0x7f, %rax; jbe`）；
    - `secret_copy` 将输入按字节复制到 `-0xd0(%rbp)` 后，检查 `-0xb0(%rbp)`（即偏移 `0x20 = 32` 字节处）的 32 位整数是否等于 `0x4e45504f`（小端序 ASCII `"OPEN"`）；
    - 随后将 `-0xac(%rbp)`（即偏移 `0x24 = 36` 字节处，`OPEN` 之后的字符串）作为参数传给 `secret_phase(str, challenge, context)`。
 2. **三字段口令计算（`secret_phase`）**：
-   - `secret_phase` 从偏移 36 起的子串中读取 **3 个** 32 位无符号整数 `v[0]`、`v[1]`、`v[2]`；
-   - 记 $c_{\text{fold}} = \text{uint32\_t}(\text{challenge}) \oplus \text{uint32\_t}(\text{challenge} \gg 32)$，$\text{ctx}_{\text{fold}} = \text{uint32\_t}(\text{context}) \oplus \text{uint32\_t}(\text{context} \gg 32)$，$m = c_{\text{fold}} \oplus \text{ctx}_{\text{fold}}$；
-   - 第一个整数：$v_0 = \text{uint32\_t}(\text{context}) \mathbin{\&} 3$；
-   - 第二个整数：调用 `secret_mix(m)` 得到 $((m \gg 5) \oplus \text{0xa10e}) + (m \oplus \text{0x6a66})$，再异或掩码 $(v_0 \times \text{0x6a66}) \oplus \text{uint32\_t}(\text{context} \gg 16)$，得到 $v_1$；
-   - 第三个整数：$v_2 = v_1 \oplus \bigl(\text{ctx}_{\text{fold}} + v_0 + \text{0xa10e} + (c_{\text{fold}} \gg 5)\bigr)$。
+   - `secret_phase` 从偏移 36 起的子串中读取 **3 个** 32 位无符号整数 `v0`、`v1`、`v2`，计算逻辑如下：
+
+```c
+uint32_t v0 = (uint32_t)context & 3U;
+uint32_t c_fold = (uint32_t)challenge ^ (uint32_t)(challenge >> 32);
+uint32_t ctx_fold = (uint32_t)context ^ (uint32_t)(context >> 32);
+uint32_t mix_in = c_fold ^ ctx_fold;
+uint32_t mixed = ((mix_in >> 5) ^ 0xa10eU) + (mix_in ^ 0x6a66U);
+uint32_t mask = (v0 * 0x6a66U) ^ (uint32_t)(context >> 16);
+uint32_t v1 = mixed ^ mask;
+uint32_t v2 = v1 ^ (ctx_fold + v0 + 0xa10eU + (c_fold >> 5));
+```
+
    - 最终第七行构造为：`32 个 'A' + "OPEN " + "v0 v1 v2"`。
 
 ---
