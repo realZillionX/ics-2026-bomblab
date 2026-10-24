@@ -1,0 +1,4 @@
+# 填写你的 11 位学号（数字或英文字母，保留大小写及前导零），然后运行 make bomb 下载你自己的 bomb。
+# 不需要预先登记 GitHub 账号；助教按 E-Learning 提交者的学号和仓库链接确认作业归属。
+# 领取后可清空或删除本配置，不要求提交。
+student_id = FILL_IN_STUDENT_ID

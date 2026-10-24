@@ -1,0 +1,16 @@
+# 个人 bomb 由 make bomb 下载，不需要提交
+/bomb
+/package.json
+# 编译产物
+/defuser
+/tutor/bomb
+/tutor/defuser
+/tutor/phase0.disasm.txt
+/tutor/phase0-input.txt
+/tutor/phase0-answer.txt
+*.o
+__pycache__/
+/teaching/*
+!/teaching/*.c
+!/teaching/Makefile
+!/teaching/README.md

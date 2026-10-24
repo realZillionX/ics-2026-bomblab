@@ -1,0 +1,64 @@
+name: BombLab public tests
+
+"on":
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bomblab-public-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  phases:
+    name: Phase ${{ matrix.phase }} public tests
+    if: github.repository != 'ICS-26Fall-FDU/BombLab'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [1, 2, 3, 4, 5, 6]
+    steps:
+      - name: Checkout submission
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Check personal bomb
+        run: |
+          if [ ! -f bomb ]; then
+            echo "::error::Personal bomb is missing. Run make bomb locally, then git add -f bomb, commit and push."
+            exit 1
+          fi
+          chmod +x bomb
+      - name: Build solution
+        run: make
+      - name: Run phase public tests
+        env:
+          PHASE: ${{ matrix.phase }}
+        run: python3 public_test.py --phase "$PHASE"
+
+  secret:
+    name: Honor public tests
+    if: github.repository != 'ICS-26Fall-FDU/BombLab'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout submission
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Check personal bomb
+        run: |
+          if [ ! -f bomb ]; then
+            echo "::error::Personal bomb is missing. Run make bomb locally, then git add -f bomb, commit and push."
+            exit 1
+          fi
+          chmod +x bomb
+      - name: Build solution
+        run: make
+      - name: Run secret public tests
+        run: python3 public_test.py --secret
